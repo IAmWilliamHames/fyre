@@ -9,14 +9,52 @@ use std::io::Cursor;
 use std::path::Path;
 use tiny_http::{Header, Response, Server, StatusCode};
 
-// Type alias for the shared, thread-safe routes map
+/// A type alias for a thread-safe, shared map of routes.
+///
+/// The keys are the routes and the values are the paths to the Lua scripts that
+/// handle them.
 type RoutesMap = Arc<Mutex<HashMap<String, String>>>;
 
 // --- Configuration ---
+/// The default server address and port.
 const DEFAULT_SERVER_ADDR: &str = "0.0.0.0:8000";
+/// The directory where Lua handler scripts are stored.
 const LUA_SCRIPTS_DIR: &str = "scripts";
+/// The filename of the Lua configuration script.
 const CONFIG_FILE: &str = "config.lua";
 
+/// Initializes and runs the web server.
+///
+/// This is the main entry point for the application. It performs the following steps:
+///
+/// 1. **Initializes Routes:** A new, empty `RoutesMap` is created to store the
+///    routing information.
+///
+/// 2. **Determines Server Address:** The server address is determined in the
+///    following order of precedence:
+///    - A command-line argument, if provided.
+///    - The `SERVER_ADDR` global variable in `config.lua`, if set.
+///    - The `DEFAULT_SERVER_ADDR` constant.
+///
+/// 3. **Loads Configuration:** The `load_lua_config` function is called to
+///    execute the `config.lua` script, which populates the `RoutesMap`.
+///
+/// 4. **Starts Server:** The server is started on the determined address.
+///
+/// 5. **Enters Request Loop:** The server enters an infinite loop, processing
+///    incoming requests. For each request, it looks up the route in the
+///    `RoutesMap` and, if found, executes the corresponding Lua handler
+///    script. If a route is not found, a 404 Not Found response is sent.
+///
+/// # Panics
+///
+/// This function will panic if it fails to lock the `RoutesMap` mutex.
+///
+/// # Errors
+///
+/// This function will return an error if:
+/// - The Lua configuration file cannot be loaded.
+/// - The server fails to start.
 fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
   println!("INFO: Server starting up...");
 
@@ -88,6 +126,34 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
   Ok(())
 }
 
+/// Loads and executes the Lua configuration script.
+///
+/// This function is responsible for setting up the Lua environment and running the
+/// `config.lua` script. It creates a new `Lua` instance and exposes two
+/// functions to the script:
+///
+/// - `router.add(path, script)`: Registers a new route. `path` is the URL path
+///   and `script` is the filename of the Lua handler script in the
+///   `LUA_SCRIPTS_DIR` directory.
+/// - `router.set_addr(address)`: Sets the server address. This is currently a
+///   noop and is only logged. The server address is actually set by the
+///   `SERVER_ADDR` global variable.
+///
+/// The function also checks for a global variable named `SERVER_ADDR` in the
+/// Lua script. If it's found, its value is returned and used as the server
+/// address.
+///
+/// # Arguments
+///
+/// * `routes_arc` - A thread-safe, shared `RoutesMap` that will be populated by
+///   the `router.add` function in the Lua script.
+///
+/// # Errors
+///
+/// This function will return an error if:
+/// - The `config.lua` file cannot be read.
+/// - The Lua script fails to execute.
+/// - It fails to lock the `RoutesMap` mutex.
 fn load_lua_config(
   routes_arc: RoutesMap,
 ) -> std::result::Result<Option<String>, Box<dyn std::error::Error>> {
@@ -139,6 +205,44 @@ fn load_lua_config(
 }
 
 // Executes the three-stage handler pipeline: MIDDLEWARE -> HANDLER (conditional) -> RESPONSE HOOK.
+/// Executes a Lua handler script and its associated middleware.
+///
+/// This function orchestrates the execution of a Lua script in a three-stage
+/// pipeline:
+///
+/// 1.  **`middleware`:** If the script returns a table containing a `middleware`
+///     function, it is executed first. This function can inspect the request and
+///     modify the response. If it sets the response status to anything other
+///     than 200, the main `handler` is skipped.
+///
+/// 2.  **`handler`:** If the script returns a table containing a `handler` function
+///     and the middleware did not intercept the request, this function is
+///     executed. It is responsible for the main request processing logic.
+/// 3.  **`response_hook`:** If the script returns a table containing a
+///     `response_hook` function, it is always executed after the `handler`
+///     (or after the `middleware` if the handler was skipped). This can be used
+///     for final modifications to the response, such as adding headers or
+///     logging.
+///
+/// The function sets up two global tables for the Lua script:
+///
+/// - `request`: An immutable table containing request data (method, path, body,
+///   headers).
+/// - `response`: A mutable table that the script can modify to set the response
+///   status, body, and headers.
+///
+/// # Arguments
+///
+/// * `req` - A mutable reference to the `tiny_http::Request`.
+/// * `script_path` - The path to the Lua handler script to execute.
+///
+/// # Errors
+///
+/// This function will return a `LuaError` if:
+/// - The handler script cannot be read.
+/// - The handler script fails to return a table.
+/// - The main `handler` function in the script returns an error.
+/// - There are issues getting or setting values in the `response` table.
 fn execute_handler_pipeline(
   req: &mut tiny_http::Request,
   script_path: &str,
