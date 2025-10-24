@@ -1,3 +1,10 @@
+//! # A Lightweight, Scriptable Rust HTTP Server
+//!
+//! Fyre combines the performance of a compiled Rust core with the
+//! dynamic flexibility of Lua scripting for all endpoint logic.
+//! This file contains the main server logic, configuration loading,
+//! and the Lua pipeline execution.
+
 use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, Mutex};
